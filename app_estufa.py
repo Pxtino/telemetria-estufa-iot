@@ -4,6 +4,8 @@ import json
 import pandas as pd
 import time
 import plotly.express as px
+import boto3
+from datetime import datetime
 
 # 1. Configuração da Página
 st.set_page_config(
@@ -49,6 +51,44 @@ if not st.session_state.autenticado:
                     st.error("⚠️ Credenciais inválidas.")
     
     st.stop() 
+
+# =========================================================
+# CONFIGURAÇÃO S3 (FLOCI LOCAL)
+# =========================================================
+BUCKET_S3 = "telemetria-lab"
+
+@st.cache_resource
+def iniciar_s3():
+    return boto3.client(
+        "s3",
+        endpoint_url="http://127.0.0.1:4566",
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+        region_name="us-east-1",
+    )
+
+cliente_s3 = iniciar_s3()
+
+def salvar_no_s3(df_dados):
+    try:
+        cliente_s3.create_bucket(Bucket=BUCKET_S3)
+    except Exception:
+        pass  # Bucket já existe
+
+    nome_chave = f"estufa/telemetria_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    payload = {
+        "estacao": "estufa-principal",
+        "total_amostras": len(df_dados),
+        "amostras": df_dados.to_dict(orient="records"),
+    }
+    conteudo_json = json.dumps(payload, ensure_ascii=False, indent=2)
+    cliente_s3.put_object(
+        Bucket=BUCKET_S3,
+        Key=nome_chave,
+        Body=conteudo_json.encode("utf-8"),
+        ContentType="application/json",
+    )
+    return nome_chave
 
 # =========================================================
 # CONFIGURAÇÃO MQTT E MEMÓRIA
@@ -124,6 +164,28 @@ with st.sidebar:
         )
     else:
         st.info("A aguardar dados do sensor...")
+
+    st.divider()
+    st.subheader("☁️ Nuvem S3 (Floci)")
+    if not st.session_state.historico.empty:
+        if st.button("Salvar Snapshot no S3", use_container_width=True):
+            try:
+                chave_salva = salvar_no_s3(st.session_state.historico)
+                st.toast(f"Salvo no S3: {chave_salva}", icon="☁️")
+            except Exception as e:
+                st.error(f"Erro ao conectar no Floci: {e}")
+
+    with st.expander("Arquivos no Bucket"):
+        try:
+            resp = cliente_s3.list_objects_v2(Bucket=BUCKET_S3, Prefix="estufa/")
+            arquivos = [obj["Key"] for obj in resp.get("Contents", [])]
+            if arquivos:
+                for arq in arquivos:
+                    st.code(arq, language=None)
+            else:
+                st.caption("Nenhum snapshot salvo ainda.")
+        except Exception:
+            st.warning("Floci offline na porta 4566.")
 
 # =========================================================
 # DASHBOARD PRINCIPAL
